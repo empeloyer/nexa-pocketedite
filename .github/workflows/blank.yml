@@ -1,0 +1,129 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-debug:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 34
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      # --- This is the actual fix for the failure in your screenshot ---
+      # The previous workflow assumed the Gradle project always lives in a
+      # "nexa_android" subfolder. On the runner that folder did not exist at
+      # that path, which is why GitHub Actions could not even start a shell
+      # there ("No such file or directory" on the *working directory*, not on
+      # gradlew). This step finds the real project root instead of guessing.
+      - name: Locate Gradle project
+        id: locate
+        run: |
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            echo "Found project at repo root"
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f "nexa_android/settings.gradle.kts" ] || [ -f "nexa_android/settings.gradle" ]; then
+            echo "Found project at nexa_android/"
+            echo "dir=nexa_android" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not find settings.gradle(.kts) in repo root or nexa_android/. Repo layout:"
+            find . -maxdepth 3 -iname "settings.gradle*" -o -iname "build.gradle*" | sort
+            exit 1
+          fi
+
+      # --- This replaces "chmod +x gradlew" + "./gradlew ..." ---
+      # This project has never had a real gradlew wrapper generated (the
+      # project's own README says so: gradle-wrapper.properties is present
+      # but gradle-wrapper.jar/gradlew/gradlew.bat are not, because it was
+      # assembled without network/Gradle access). Instead of a wrapper file,
+      # this step provisions the exact Gradle version the project expects
+      # (8.7, from gradle/wrapper/gradle-wrapper.properties) and puts a
+      # `gradle` binary on PATH for the next step to call directly.
+      # (v4 of this action removed the old "arguments"/"build-root-directory"
+      # shortcut - it now only sets up the environment, see
+      # https://github.com/gradle/actions/blob/main/docs/deprecation-upgrade-guide.md)
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Clean & Build Debug APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: gradle clean assembleDebug --stacktrace
+
+      - name: Find APK
+        run: find . -name "*.apk"
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: '**/app/build/outputs/apk/debug/*.apk'
+          if-no-files-found: error
+
+  build-release:
+    name: Build Release APK
+    needs: build-debug
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 34
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Locate Gradle project
+        id: locate
+        run: |
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f "nexa_android/settings.gradle.kts" ] || [ -f "nexa_android/settings.gradle" ]; then
+            echo "dir=nexa_android" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not find settings.gradle(.kts) in repo root or nexa_android/."
+            exit 1
+          fi
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Clean & Build Release APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: gradle clean assembleRelease --stacktrace
+
+      - name: Find APK
+        run: find . -name "*.apk"
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: '**/app/build/outputs/apk/release/*.apk'
+          if-no-files-found: error
